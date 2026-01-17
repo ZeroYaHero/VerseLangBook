@@ -1,0 +1,363 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+function printUsage() {
+  console.log('Usage: extract <markdown-file> -t <target-directory>');
+  console.log('');
+  console.log('Extracts Verse code snippets from a Markdown file.');
+  console.log('Creates a subdirectory named after the input file in the target directory.');
+  process.exit(1);
+}
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+
+  if (args.length < 3) {
+    printUsage();
+  }
+
+  const markdownFile = args[0];
+  const targetIndex = args.indexOf('-t');
+
+  if (targetIndex === -1 || targetIndex === args.length - 1) {
+    console.error('Error: -t option requires a target directory');
+    printUsage();
+  }
+
+  const targetDir = args[targetIndex + 1];
+
+  return { markdownFile, targetDir };
+}
+
+function extractPrependComment(lines, verseBlockStart) {
+  // Look backwards from verseBlockStart to find <!--verse, <!--versetest, or <!-- comment
+  let commentLines = [];
+  let isTest = false;
+  let i = verseBlockStart - 1;
+
+  // Skip empty lines
+  while (i >= 0 && lines[i].trim() === '') {
+    i--;
+  }
+
+  // Skip numbered comment like <!-- 04 -->
+  if (i >= 0 && /^<!--\s*\d+\s*-->$/.test(lines[i].trim())) {
+    i--;
+    // Skip more empty lines after the numbered comment
+    while (i >= 0 && lines[i].trim() === '') {
+      i--;
+    }
+  }
+
+  if (i >= 0) {
+    const trimmed = lines[i].trim();
+
+    // Check for single-line markers like <!--versetest--> or <!--verse-->
+    if (trimmed === '<!--versetest-->') {
+      isTest = true;
+      return { commentLines, isTest };
+    } else if (trimmed === '<!--verse-->') {
+      return { commentLines, isTest };
+    }
+
+    // Check if we found a closing --> (multi-line comment)
+    if (trimmed === '-->') {
+      i--;
+      // Collect lines until we find <!--versetest, <!--verse, or <!--
+      while (i >= 0) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (trimmed.startsWith('<!--versetest')) {
+          // Found <!--versetest, extract content after it
+          isTest = true;
+          const firstLine = line.substring(line.indexOf('<!--versetest') + 13).trim();
+          if (firstLine) {
+            commentLines.unshift(firstLine);
+          }
+          break;
+        } else if (trimmed.startsWith('<!--verse')) {
+          // Found <!--verse, extract content after it
+          const firstLine = line.substring(line.indexOf('<!--verse') + 9).trim();
+          if (firstLine) {
+            commentLines.unshift(firstLine);
+          }
+          break;
+        } else if (trimmed === '<!--') {
+          // Found plain <!--, don't include the marker itself
+          break;
+        }
+        commentLines.unshift(line);
+        i--;
+      }
+    }
+  }
+
+  return { commentLines, isTest };
+}
+
+function extractAppendComment(lines, verseBlockEnd) {
+  // Look forward from verseBlockEnd to find <!--versetest, <!--verse, or <!-- comment
+  let commentLines = [];
+  let i = verseBlockEnd + 1;
+
+  // Skip empty lines
+  while (i < lines.length && lines[i].trim() === '') {
+    i++;
+  }
+
+  // Check if we found an opening <!--versetest, <!--verse, or <!--
+  if (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    // Check for single-line comment like <!-- content -->
+    if (trimmed.startsWith('<!--') && trimmed.endsWith('-->')) {
+      // Skip numbered comments like <!-- 04 -->
+      if (/^<!--\s*\d+\s*-->$/.test(trimmed)) {
+        return commentLines;
+      }
+      // Extract content between <!-- and -->
+      const match = trimmed.match(/^<!--\s*(.*?)\s*-->$/);
+      if (match && match[1]) {
+        commentLines.push(match[1]);
+      }
+      return commentLines;
+    }
+
+    if (trimmed.startsWith('<!--versetest')) {
+      // Extract content after <!--versetest on the same line
+      const firstLine = lines[i].substring(lines[i].indexOf('<!--versetest') + 13).trim();
+      if (firstLine && firstLine !== '') {
+        commentLines.push(firstLine);
+      }
+      i++;
+
+      // Collect lines until we find -->
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === '-->') {
+          break;
+        }
+        commentLines.push(line);
+        i++;
+      }
+    } else if (trimmed.startsWith('<!--verse')) {
+      // Extract content after <!--verse on the same line
+      const firstLine = lines[i].substring(lines[i].indexOf('<!--verse') + 9).trim();
+      if (firstLine && firstLine !== '') {
+        commentLines.push(firstLine);
+      }
+      i++;
+
+      // Collect lines until we find -->
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === '-->') {
+          break;
+        }
+        commentLines.push(line);
+        i++;
+      }
+    } else if (trimmed === '<!--') {
+      // Found plain <!--
+      i++;
+
+      // Collect lines until we find -->
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === '-->') {
+          break;
+        }
+        commentLines.push(line);
+        i++;
+      }
+    }
+  }
+
+  return commentLines;
+}
+
+function extractSnippetNumber(lines, verseBlockStart) {
+  // Look backwards from verseBlockStart to find <!-- XX --> comment
+  let i = verseBlockStart - 1;
+
+  // Skip empty lines
+  while (i >= 0 && lines[i].trim() === '') {
+    i--;
+  }
+
+  // Check for numbered comment like <!-- 01 --> or <!-- 02 --> or <!-- 01 FAILURE... -->
+  if (i >= 0) {
+    const trimmed = lines[i].trim();
+    const match = trimmed.match(/^<!--\s*(\d+)(?:\s+FAILURE.*)?\s*-->$/);
+    if (match) {
+      return match[1]; // Return the number as a string (already padded)
+    }
+  }
+
+  return null;
+}
+
+function shouldSkipSnippet(lines, verseBlockStart) {
+  // Look backwards from verseBlockStart to check for <!--NoCompile--> or FAILURE
+  let i = verseBlockStart - 1;
+
+  // Skip empty lines
+  while (i >= 0 && lines[i].trim() === '') {
+    i--;
+  }
+
+  // Check for numbered comment with FAILURE like <!-- 28 FAILURE... -->
+  if (i >= 0) {
+    const trimmed = lines[i].trim();
+    if (/^<!--\s*\d+\s+FAILURE.*\s*-->$/.test(trimmed)) {
+      return true;
+    }
+  }
+
+  // Skip numbered comments without FAILURE
+  while (i >= 0 && /^<!--\s*\d+\s*-->$/.test(lines[i].trim())) {
+    i--;
+  }
+
+  // Check if we found <!--NoCompile-->
+  if (i >= 0 && lines[i].trim() === '<!--NoCompile-->') {
+    return true;
+  }
+
+  return false;
+}
+
+function extractVerseSnippets(markdownContent) {
+  const snippets = [];
+  const lines = markdownContent.split('\n');
+  let inVerseBlock = false;
+  let currentSnippet = [];
+  let verseBlockStart = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.trim().startsWith('```verse')) {
+      inVerseBlock = true;
+      verseBlockStart = i;
+      currentSnippet = [];
+    } else if (inVerseBlock && line.trim().startsWith('```')) {
+      inVerseBlock = false;
+
+      // Skip this snippet if it has <!--NoCompile--> marker
+      if (shouldSkipSnippet(lines, verseBlockStart)) {
+        continue;
+      }
+
+      // Extract the snippet number from the comment
+      const snippetNumber = extractSnippetNumber(lines, verseBlockStart);
+
+      // Skip snippets without explicit number
+      if (!snippetNumber) {
+        continue;
+      }
+
+      const number = snippetNumber;
+
+      // Look for prepend comment before the ```verse block
+      const { commentLines: prependLines, isTest } = extractPrependComment(lines, verseBlockStart);
+
+      // Look for append comment after the closing ```
+      const appendLines = extractAppendComment(lines, i);
+
+      // Choose using statement based on whether it's a test or not
+      const usingStatement = isTest
+        ? 'using { /Verse.org/Tests/VerseTestScriptCmd }'
+        : 'using { /Verse.org/VerseCLR }';
+
+      // Add stub definitions
+      const prelude = [
+        'Sleep(:float)<transacts><suspends>:void={}'
+      ];
+
+      // Add Print function definition for test files only
+      if (isTest) {
+        prelude.push('Print(Message:string):void={}');
+      }
+
+      // For tests, add "assert:" before the snippet
+      const contentPrefix = isTest ? ['assert:'] : [];
+
+      // For tests, indent the append lines to be inside the assert block
+      const formattedAppendLines = isTest
+        ? appendLines.map(line => '    ' + line)
+        : appendLines;
+
+      // Combine: using statements + prelude + prepend + [assert:] + snippet (indented by 4 spaces) + append
+      const fullContent = [
+        usingStatement,
+        'using { /Verse.org/Concurrency }',
+        ...prelude,
+        ...prependLines,
+        ...contentPrefix,
+        ...currentSnippet.map(line => '    ' + line),
+        ...formattedAppendLines
+      ].join('\n');
+
+      snippets.push({
+        number: number,
+        content: fullContent,
+        isTest: isTest
+      });
+    } else if (inVerseBlock) {
+      currentSnippet.push(line);
+    }
+  }
+
+  return snippets;
+}
+
+function main() {
+  const { markdownFile, targetDir } = parseArgs();
+
+  // Check if markdown file exists
+  if (!fs.existsSync(markdownFile)) {
+    console.error(`Error: File '${markdownFile}' not found`);
+    process.exit(1);
+  }
+
+  // Read markdown file
+  const markdownContent = fs.readFileSync(markdownFile, 'utf-8');
+
+  // Extract snippets
+  const snippets = extractVerseSnippets(markdownContent);
+
+  if (snippets.length === 0) {
+    console.log('No Verse code snippets found');
+    return;
+  }
+
+  // Create target directory if it doesn't exist
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  // Create subdirectory based on markdown filename (without extension)
+  const basename = path.basename(markdownFile, path.extname(markdownFile));
+  const outputDir = path.join(targetDir, basename);
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  // Write snippets to files
+  snippets.forEach(snippet => {
+    // Use the snippet number directly (already padded from the comment)
+    const extension = snippet.isTest ? '.versetest' : '.verse';
+    const filename = path.join(outputDir, `${snippet.number}${extension}`);
+    fs.writeFileSync(filename, snippet.content + '\n\n');
+    console.log(`Created: ${filename}`);
+  });
+
+  console.log(`\nExtracted ${snippets.length} snippet(s) from ${markdownFile}`);
+}
+
+main();
