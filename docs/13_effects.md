@@ -414,7 +414,7 @@ for constructors and initialization code.
 
 ### Internal effects
 
-The `<no_rollback>` is depracted.
+**[Pre-release]**: The `<no_rollback>` effect is deprecated.
 
 <!-- TODO: write more -->
 
