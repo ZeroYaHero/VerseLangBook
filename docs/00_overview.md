@@ -214,7 +214,7 @@ game_item := class<final><persistable>:
             _ => false  # Fails if the item is legenday or unexpected
     
     # Computed property using closed-world function
-    GetEffectiveValue()<transacts><decides> :int=
+    GetEffectiveValue()<transacts><decides>:int=
         Floor[Stats.Value * GetRarityMultiplier[]]
 
 # Inventory system with state management and effects
@@ -265,7 +265,7 @@ inventory_system := class:
         Print("Purchased {ShopItem.Name} for {Price} gold")
 
     # Higher-order function with type parameters and where clauses
-    FilterItems(Predicate:type{_(:game_item)<decides>:void} ) :[]game_item =
+    FilterItems(Predicate:type{_(:game_item)<decides>:void}):[]game_item =
         for (Item : Items, Predicate[Item]):
             Item
 
@@ -386,7 +386,7 @@ Data structures are immutable unless explicitly marked with `var`. This eliminat
 
 Verse has a set of naming conventions that make code readable and predictable. While the language doesn't enforce these conventions, following them ensures your code integrates well with the broader Verse ecosystem and is immediately familiar to other Verse developers.
 
-Idnetifiers should be in PascalCase (CamelCase starting with uppercase):
+Identifiers should be in PascalCase (CamelCase starting with uppercase):
 
 <!--verse
 PlayerDatabase(id:int)<decides>:player_character=player_character{Name:="", Level:=1}
@@ -657,7 +657,7 @@ Result := if:
     ComplexCondition() and
     AnotherCheck() and
     YetAnotherValidation()
-then { "condition met" } ese { "condition not met" }
+then { "condition met" } else { "condition not met" }
 ```
 
 All these forms produce the same result. The choice between them is about readability and context. Use braces when working with existing brace-heavy code, indentation for cleaner vertical layouts, and inline forms for simple expressions. This flexibility lets you write code that reads naturally.
